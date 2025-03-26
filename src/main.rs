@@ -65,7 +65,7 @@ fn load_config() -> Config {
         api_key: "".to_string(),
         model: "qwen/qwen-2.5-coder-32b-instruct:free".to_string(),
         show_ai_commands_output: true,
-        context_window_size: 16,
+        context_window_size: 32,
         shell_type: "bash".to_string(),
         require_confirmation: true,
     };
