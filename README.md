@@ -80,3 +80,9 @@ The project is under active development.
 
 ## Contributing
 I am open to cooperation to improve the functionality of this software. Pull requests are welcomed and highly encouraged!
+
+## License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Author
+Created by [tarkh](https://t.me/tarkhx)
