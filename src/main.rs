@@ -35,26 +35,15 @@ struct Message {
 }
 
 fn get_config_path() -> PathBuf {
+    // Prioritize AIOSC_CONFIG_PATH if set
     if let Ok(path) = std::env::var("AIOSC_CONFIG_PATH") {
         return PathBuf::from(path);
     }
 
+    // Default to OS config directory (e.g., ~/.config/aiosc/aiosc.config.json)
     let mut config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     config_dir.push("aiosc");
     config_dir.push("aiosc.config.json");
-
-    if config_dir.exists() {
-        return config_dir;
-    }
-
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let mut local_path = exe_dir.to_path_buf();
-            local_path.push("aiosc.config.json");
-            return local_path;
-        }
-    }
-
     config_dir
 }
 
@@ -71,6 +60,33 @@ fn load_config() -> Config {
     };
 
     let config_path = get_config_path();
+
+    // Create default config in OS config directory if it doesn't exist
+    if !config_path.exists() {
+        if let Some(parent) = config_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                println!(
+                    "{}",
+                    format!("Failed to create config directory '{}': {}", parent.display(), e).red()
+                );
+            } else {
+                let default_json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
+                if let Err(e) = std::fs::write(&config_path, default_json) {
+                    println!(
+                        "{}",
+                        format!("Failed to write default config to '{}': {}", config_path.display(), e).red()
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        format!("Created default config at '{}'", config_path.display()).green()
+                    );
+                }
+            }
+        }
+    }
+
+    // Load config from file if it exists
     if let Ok(json) = std::fs::read_to_string(&config_path) {
         let stripped = StripComments::new(json.as_bytes());
         match serde_json::from_reader(stripped) {
@@ -85,6 +101,7 @@ fn load_config() -> Config {
         }
     }
 
+    // Override with environment variables
     if let Ok(debug) = std::env::var("AIOSC_DEBUG") {
         config.debug = debug.to_lowercase() == "true";
     }
@@ -259,8 +276,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                             role: "user".to_string(),
                             content: input.to_string(),
                         });
-                        let response = query_llm(&config, &conversation)?;
-                        process_response(&config, &mut conversation, response)?;
+                        match query_llm(&config, &conversation) {
+                            Ok(response) => process_response(&config, &mut conversation, response)?,
+                            Err(e) => println!("{}", format!("LLM error: {}", e).red()),
+                        }
                     }
                 }
             }
@@ -292,10 +311,7 @@ fn query_llm(config: &Config, conversation: &[Message]) -> Result<String, Box<dy
 
     if config.debug {
         let pretty_in = serde_json::to_string_pretty(conversation)?;
-        println!(
-            "{}",
-            format!("[API request]\n{}", pretty_in).truecolor(128, 128, 128)
-        );
+        println!("{}", format!("[API request]\n{}", pretty_in).truecolor(128, 128, 128));
     }
 
     let mut request = client
@@ -307,11 +323,40 @@ fn query_llm(config: &Config, conversation: &[Message]) -> Result<String, Box<dy
         request = request.header("Authorization", format!("Bearer {}", config.api_key));
     }
 
-    let res = request.send().map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    let res = match request.send() {
+        Ok(res) => {
+            if res.status().is_success() {
+                res
+            } else {
+                return Err(match res.status().as_u16() {
+                    401 => Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Invalid API key or authentication failed",
+                    )),
+                    404 => Box::new(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "API endpoint not found",
+                    )),
+                    code => Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("API request failed with status code: {}", code),
+                    )),
+                });
+            }
+        }
+        Err(e) => {
+            return Err(if e.is_connect() {
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "Failed to connect to the LLM server",
+                ))
+            } else {
+                Box::new(e)
+            });
+        }
+    };
 
-    let json: serde_json::Value = res
-        .json()
-        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    let json: serde_json::Value = res.json().map_err(|e| Box::new(e) as Box<dyn Error>)?;
     let content = json["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or("")
@@ -338,11 +383,7 @@ fn execute_command(
         _ => {
             println!(
                 "{}",
-                format!(
-                    "Unsupported SHELL_TYPE: {}. Defaulting to 'bash'.",
-                    config.shell_type
-                )
-                .red()
+                format!("Unsupported SHELL_TYPE: {}. Defaulting to 'bash'.", config.shell_type).red()
             );
             ("bash", "-c")
         }
@@ -350,9 +391,9 @@ fn execute_command(
 
     let mut cmd = Command::new(shell);
     cmd.arg(shell_arg).arg(trimmed_command);
+    cmd.envs(std::env::vars());
     let mut process = PtyProcess::spawn(cmd)?;
 
-    // Get terminal size
     let mut winsize = Winsize {
         ws_row: 0,
         ws_col: 0,
@@ -364,22 +405,19 @@ fn execute_command(
     }
     process.set_window_size(winsize.ws_col as u16, winsize.ws_row as u16)?;
 
-    // Configure PTY with echo
     let mut pty = process.get_pty_stream()?;
     let pty_fd = pty.as_raw_fd();
     let pty_borrowed_fd = unsafe { BorrowedFd::borrow_raw(pty_fd) };
     let mut pty_termios = termios::tcgetattr(pty_borrowed_fd)?;
-    pty_termios.local_flags |= termios::LocalFlags::ECHO; // Enable echo
+    pty_termios.local_flags |= termios::LocalFlags::ECHO;
     termios::tcsetattr(pty_borrowed_fd, termios::SetArg::TCSANOW, &pty_termios)?;
 
-    // Set PTY to non-blocking
     let flags = fcntl(pty_fd, F_GETFL)?;
     fcntl(
         pty_fd,
         FcntlArg::F_SETFL(OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK),
     )?;
 
-    // Enter raw mode for stdin
     let mut stdin = io::stdin();
     let original_termios = termios::tcgetattr(&stdin)?;
     let mut raw = original_termios.clone();
@@ -390,7 +428,6 @@ fn execute_command(
     let mut buffer = [0; 4096];
     let mut input_buffer = [0; 1024];
 
-    // Poll stdin and PTY
     let stdin_fd = stdin.as_raw_fd();
     let stdin_borrowed_fd = unsafe { BorrowedFd::borrow_raw(stdin_fd) };
     let mut poll_fds = [
@@ -402,7 +439,6 @@ fn execute_command(
     while running {
         match poll(&mut poll_fds, 100u16)? {
             n if n > 0 => {
-                // Handle stdin (user input)
                 if poll_fds[0]
                     .revents()
                     .unwrap_or(PollFlags::empty())
@@ -411,10 +447,10 @@ fn execute_command(
                     match stdin.read(&mut input_buffer) {
                         Ok(n) if n > 0 => {
                             let input = &input_buffer[..n];
-                            pty.write_all(input)?; // Send input to PTY
+                            pty.write_all(input)?;
                             pty.flush()?;
                         }
-                        Ok(_) => break, // EOF (Ctrl+D)
+                        Ok(_) => break,
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                         Err(e) => {
                             termios::tcsetattr(&stdin, termios::SetArg::TCSANOW, &original_termios)?;
@@ -423,7 +459,6 @@ fn execute_command(
                     }
                 }
 
-                // Handle PTY output
                 if poll_fds[1]
                     .revents()
                     .unwrap_or(PollFlags::empty())
@@ -438,7 +473,7 @@ fn execute_command(
                             }
                             output.push_str(&chunk);
                         }
-                        Ok(_) => running = false, // EOF from PTY
+                        Ok(_) => running = false,
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                         Err(e) => {
                             termios::tcsetattr(&stdin, termios::SetArg::TCSANOW, &original_termios)?;
@@ -447,7 +482,6 @@ fn execute_command(
                     }
                 }
 
-                // Check if process exited
                 if poll_fds[1]
                     .revents()
                     .unwrap_or(PollFlags::empty())
@@ -456,12 +490,11 @@ fn execute_command(
                     running = false;
                 }
             }
-            0 => {} // Timeout
-            _ => running = false, // Error or interrupt
+            0 => {}
+            _ => running = false,
         }
     }
 
-    // Restore terminal and get status
     termios::tcsetattr(&stdin, termios::SetArg::TCSANOW, &original_termios)?;
     let status = process.wait()?;
     match status {
@@ -481,14 +514,8 @@ fn process_response(
     conversation: &mut Vec<Message>,
     response: String,
 ) -> Result<(), Box<dyn Error>> {
-    let cmd_match = response
-        .match_indices("<cmd>")
-        .next()
-        .map(|(i, _)| (i, "</cmd>"));
-    let cmdctx_match = response
-        .match_indices("<cmdctx>")
-        .next()
-        .map(|(i, _)| (i, "</cmdctx>"));
+    let cmd_match = response.match_indices("<cmd>").next().map(|(i, _)| (i, "</cmd>"));
+    let cmdctx_match = response.match_indices("<cmdctx>").next().map(|(i, _)| (i, "</cmdctx>"));
 
     let (start, end_tag, needs_full_context) = if let Some((start, end_tag)) = cmd_match {
         (start, end_tag, false)
@@ -503,9 +530,7 @@ fn process_response(
         return Ok(());
     };
 
-    let end = response[start..]
-        .find(end_tag)
-        .unwrap_or(response.len()) + end_tag.len();
+    let end = response[start..].find(end_tag).unwrap_or(response.len()) + end_tag.len();
     let command = response[start + end_tag.len() - 1..start + end - end_tag.len() + 0].trim();
     let text = response[..start].trim();
     if !text.is_empty() {
@@ -513,22 +538,14 @@ fn process_response(
     }
     println!(
         "{}",
-        format!(
-            "[Executing{}] {}",
-            if needs_full_context { " (fo)" } else { "" },
-            command
-        )
+        format!("[Executing{}] {}", if needs_full_context { " (fo)" } else { "" }, command)
         .truecolor(128, 128, 128)
     );
 
     let should_execute = if config.require_confirmation {
         print!(
             "{}",
-            format!(
-                "Execute '{}'? Press Enter to confirm, any key + Enter to abort: ",
-                command
-            )
-            .cyan()
+            format!("Execute '{}'? Press Enter to confirm, any key + Enter to abort: ", command).cyan()
         );
         io::stdout().flush()?;
         let mut input = String::new();
@@ -554,8 +571,10 @@ fn process_response(
             role: "tool".to_string(),
             content: output.clone(),
         });
-        let next_response = query_llm(config, conversation)?;
-        process_response(config, conversation, next_response)?;
+        match query_llm(config, conversation) {
+            Ok(next_response) => process_response(config, conversation, next_response)?,
+            Err(e) => println!("{}", format!("LLM error: {}", e).red()),
+        }
     } else {
         conversation.push(Message {
             role: "assistant".to_string(),
