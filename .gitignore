@@ -17,3 +17,7 @@ target/
 #.idea/aiosc.config.json
 aiosc.config.json
 
+# Common OS files
+.DS_Store
+Thumbs.db
+desktop.ini
