@@ -16,3 +16,8 @@ target/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/aiosc.config.json
 aiosc.config.json
+
+# Common OS files
+.DS_Store
+Thumbs.db
+desktop.ini
