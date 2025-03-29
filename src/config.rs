@@ -13,6 +13,14 @@ pub struct Config {
     pub context_window_size: usize,
     pub shell_type: String,
     pub require_confirmation: bool,
+    #[serde(default)] // Optional field, defaults to empty vec
+    pub references: Vec<Reference>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct Reference {
+    pub command: String,
+    pub description: String,
 }
 
 pub fn get_config_path() -> PathBuf {
@@ -35,6 +43,7 @@ pub fn load_config() -> Config {
         context_window_size: 32,
         shell_type: "bash".to_string(),
         require_confirmation: true,
+        references: Vec::new(), // Default empty references
     };
 
     let config_path = get_config_path();

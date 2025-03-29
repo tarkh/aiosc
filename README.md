@@ -37,6 +37,7 @@ Windows: C:\Users\Username\AppData\Roaming\aiosc\aiosc.config.json
 - **context_window_size**: Chat context window size (history).
 - **shell_type**: Shell type (bash, zsh, cmd, PowerShell).
 - **require_confirmation**: Requires confirmation before executing commands.
+- **references** (optional): List of users custom commands.
 
 ## LLM Server
 Tested with:
@@ -61,7 +62,13 @@ Tested with:
   "show_ai_commands_output": true,
   "context_window_size": 32,
   "shell_type": "bash",
-  "require_confirmation": true
+  "require_confirmation": true,
+  "references": [
+    {
+      "command": "<cmdctx>my-custom-app --restart <name></cmdctx>",
+      "description": "Restart MyCustomApp by it's name."
+    }
+  ]
 }
 ```
 You can also pass configuration through environment variables:
