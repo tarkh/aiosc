@@ -1,10 +1,144 @@
 use std::io::{self, Write};
-use rustyline::{DefaultEditor, error::ReadlineError};
+//use std::path::Path;
+use rustyline::{
+    Config as RustyConfig, Editor, error::ReadlineError,
+    completion::{Completer, Pair, FilenameCompleter},
+    hint::{Hinter, HistoryHinter},
+    highlight::{Highlighter, MatchingBracketHighlighter, CmdKind},
+    validate::Validator,
+    Helper, history::FileHistory
+};
 use colored::Colorize;
 use crate::{config::Config, message::Message, llm::query_llm, executor::execute_command};
 
+struct AioscCompleter {
+    filename_completer: FilenameCompleter,
+    hinter: HistoryHinter,
+    bracket_highlighter: MatchingBracketHighlighter,
+}
+
+impl Helper for AioscCompleter {}
+
+impl Completer for AioscCompleter {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        // Built-in special commands (always available at start)
+        let special_commands = vec![
+            "cd", "cmd", "exit", "help", "reset", "context"
+        ];
+
+        // Get the word under the cursor
+        let (start, word) = if pos == 0 || line[..pos].ends_with(' ') {
+            (pos, "")
+        } else {
+            let before_cursor = &line[..pos];
+            if let Some(last_space) = before_cursor.rfind(' ') {
+                (last_space + 1, &before_cursor[last_space + 1..])
+            } else {
+                (0, before_cursor)
+            }
+        };
+
+        // Command completion logic
+        if start == 0 || line[..start].trim().is_empty() {
+            // Case 1: At start of line - only show special commands
+            let candidates: Vec<Pair> = special_commands
+                .iter()
+                .filter(|cmd| cmd.starts_with(word))
+                .map(|cmd| Pair {
+                    display: cmd.to_string(),
+                    replacement: cmd.to_string(),
+                })
+                .collect();
+            
+            if !candidates.is_empty() {
+                return Ok((start, candidates));
+            }
+        } else if line.starts_with("cmd ") {
+            // Case 2: After "cmd " - show system commands
+            let mut system_commands = Vec::new();
+
+            // Load system commands from PATH
+            if let Ok(path) = std::env::var("PATH") {
+                for dir in std::env::split_paths(&path) {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.filter_map(Result::ok) {
+                            if let Ok(file_type) = entry.file_type() {
+                                if file_type.is_file() || file_type.is_symlink() {
+                                    if let Some(name) = entry.file_name().into_string().ok() {
+                                        system_commands.push(name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            system_commands.sort_unstable();
+            system_commands.dedup();
+
+            let candidates: Vec<Pair> = system_commands
+                .into_iter()
+                .filter(|cmd| cmd.starts_with(word))
+                .map(|cmd| Pair {
+                    display: cmd.clone(),
+                    replacement: cmd,
+                })
+                .collect();
+
+            if !candidates.is_empty() {
+                return Ok((start, candidates));
+            }
+        }
+
+        // Fallback to filename completion
+        self.filename_completer.complete(line, pos, ctx)
+    }
+}
+
+impl Hinter for AioscCompleter {
+    type Hint = String;
+
+    fn hint(&self, line: &str, pos: usize, ctx: &rustyline::Context<'_>) -> Option<String> {
+        self.hinter.hint(line, pos, ctx)
+    }
+}
+
+impl Highlighter for AioscCompleter {
+    fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
+        std::borrow::Cow::Owned(hint.truecolor(128, 128, 128).to_string())
+    }
+
+    fn highlight<'l>(&self, line: &'l str, pos: usize) -> std::borrow::Cow<'l, str> {
+        self.bracket_highlighter.highlight(line, pos)
+    }
+
+    fn highlight_char(&self, line: &str, pos: usize, forced: CmdKind) -> bool {
+        self.bracket_highlighter.highlight_char(line, pos, forced)
+    }
+}
+
+impl Validator for AioscCompleter {}
+
 pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
-    let mut rl = DefaultEditor::new()?;
+    let rusty_config = RustyConfig::builder()
+    .completion_type(rustyline::CompletionType::List)
+    .build();
+
+    let mut rl: Editor<AioscCompleter, FileHistory> = Editor::with_config(rusty_config)?;
+    rl.set_helper(Some(AioscCompleter {
+        filename_completer: FilenameCompleter::new(),
+        hinter: HistoryHinter {},
+        bracket_highlighter: MatchingBracketHighlighter::new(),
+    }));
+
     let info = os_info::get();
     let cwd = std::env::current_dir()?;
     let os_info = format!(
@@ -99,10 +233,20 @@ pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     },
                     input if input.starts_with("cd ") => {
                       let path = input[3..].trim();
-                      if let Err(e) = std::env::set_current_dir(path) {
+                        let expanded_path = if path == "~" {
+                            dirs::home_dir().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Home directory not found"))?
+                        } else if path.starts_with("~/") {
+                            let mut home = dirs::home_dir().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Home directory not found"))?;
+                            home.push(&path[2..]);
+                            home
+                        } else {
+                            std::path::PathBuf::from(path)
+                        };
+
+                        if let Err(e) = std::env::set_current_dir(&expanded_path) {
                           println!(
                               "{}",
-                              format!("Failed to change directory to '{}': {}", path, e).red()
+                                format!("Failed to change directory to '{}': {}", expanded_path.display(), e).red()
                           );
                       } else {
                           println!(
@@ -148,24 +292,44 @@ pub fn trim_conversation(config: &Config, conversation: &mut Vec<Message>) {
 }
 
 pub fn process_response(config: &Config, conversation: &mut Vec<Message>, response: String) -> Result<(), Box<dyn std::error::Error>> {
-    let cmd_match = response.match_indices("<cmd>").next().map(|(i, _)| (i, "</cmd>"));
-    let cmdctx_match = response.match_indices("<cmdctx>").next().map(|(i, _)| (i, "</cmdctx>"));
-    let (start, end_tag, needs_full_context) = if let Some((start, end_tag)) = cmd_match {
-        (start, end_tag, false)
-    } else if let Some((start, end_tag)) = cmdctx_match {
-        (start, end_tag, true)
-    } else {
+    // Find command tags
+    let cmd_match = response.match_indices("<cmd>").next().map(|(i, _)| (i, "</cmd>", 5));
+    let cmdctx_match = response.match_indices("<cmdctx>").next().map(|(i, _)| (i, "</cmdctx>", 8));
+    
+    let (start, end_tag, tag_len, needs_full_context) = match (cmd_match, cmdctx_match) {
+        (Some((start, end_tag, tag_len)), _) => (start, end_tag, tag_len, false),
+        (_, Some((start, end_tag, tag_len))) => (start, end_tag, tag_len, true),
+        _ => {
+            println!("{}", response.yellow());
+            conversation.push(Message { role: "assistant".to_string(), content: response });
+            return Ok(());
+        }
+    };
+
+    // Find closing tag
+    let Some(closing_pos) = response[start..].find(end_tag) else {
         println!("{}", response.yellow());
         conversation.push(Message { role: "assistant".to_string(), content: response });
         return Ok(());
     };
 
-    let end = response[start..].find(end_tag).unwrap_or(response.len()) + end_tag.len();
-    let command = response[start + end_tag.len() - 1..start + end - end_tag.len()].trim();
-    let text = response[..start].trim();
-    if !text.is_empty() { println!("{}", text.yellow()); }
-    println!("{}", format!("[Executing{}] {}", if needs_full_context { " (fo)" } else { "" }, command).truecolor(128, 128, 128));
+    // Extract command (fixing the off-by-one error)
+    let command_start = start + tag_len;
+    let command_end = start + closing_pos;
+    let command = response[command_start..command_end].trim();
 
+    // Print non-command text if present
+    let text = response[..start].trim();
+    if !text.is_empty() { 
+        println!("{}", text.yellow()); 
+    }
+    
+    println!("{}", format!("[Executing{}] {}", 
+        if needs_full_context { " (fo)" } else { "" }, 
+        command
+    ).truecolor(128, 128, 128));
+
+    // Rest of your existing code...
     let should_execute = if config.require_confirmation {
         print!("{}", format!("Execute '{}'? Press Enter to confirm, any key + Enter to abort: ", command).cyan());
         io::stdout().flush()?;
@@ -179,7 +343,11 @@ pub fn process_response(config: &Config, conversation: &mut Vec<Message>, respon
         let output = execute_command(config, command, needs_full_context, false)?;
         conversation.push(Message {
             role: "assistant".to_string(),
-            content: format!("<{}>{}</{}>", if needs_full_context { "cmdctx" } else { "cmd" }, command, if needs_full_context { "cmdctx" } else { "cmd" }),
+            content: format!("<{}>{}</{}>", 
+                if needs_full_context { "cmdctx" } else { "cmd" }, 
+                command, 
+                if needs_full_context { "cmdctx" } else { "cmd" }
+            ),
         });
         conversation.push(Message { role: "tool".to_string(), content: output.clone() });
         match query_llm(config, conversation) {

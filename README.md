@@ -47,6 +47,7 @@ Tested with:
 Tested with:
 - `deepseek/deepseek-chat-v3-0324:free` (OpenRouter AI)
 - `qwen/qwen-2.5-coder-32b-instruct:free` (OpenRouter AI)
+- `meta-llama/llama-3.2-3b-instruct:free` (OpenRouter AI)
 - `qwen2.5-coder-7b-instruct` (LM Studio)
 
 ### Configuration Format:  

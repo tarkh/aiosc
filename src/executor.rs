@@ -100,7 +100,11 @@ pub fn execute_command(
     let status = process.wait()?;
     match status {
         ptyprocess::WaitStatus::Exited(_, code) => Ok(if code == 0 && !needs_full_context {
-            "Success".to_string()
+            if user_command {
+                "".to_string()
+            } else {
+                "Success".to_string()
+            }
         } else if code == 0 && needs_full_context {
             output
         } else {

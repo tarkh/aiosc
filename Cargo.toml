@@ -1,6 +1,6 @@
 [package]
 name = "aiosc"
-version = "0.1.6"
+version = "0.1.7"
 license = "MIT"
 authors = ["tarkh"]
 description = "Artificial Intelligence Operating System Commander"
