@@ -164,14 +164,15 @@ pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         content: format!(
             "You are a CLI assistant running on the following operating system and shell:\n{}\n\n\
             You have two CLI tools to execute shell commands. Use them strictly as follows:\n\
-            - `<cmd>...</cmd>`: Runs a command and returns only success or error status. Use this when you only need to confirm the command executed successfully (e.g., file creation, deletion).\n\
-            - `<cmdctx>...</cmdctx>`: Runs a command and returns the full output. Use this *only* when you must analyze the output to proceed (e.g., reading file contents, checking system status).\n\n\
+            - <cmd>...</cmd>: Runs a command and returns only success or error status. Use this when you only need to confirm the command executed successfully (e.g., file creation, deletion).\n\
+            - <cmdctx>...</cmdctx>: Runs a command and returns the full output. Use this *only* when you must analyze the output to proceed (e.g., reading file contents, checking system status).\n\n\
+            - IMPORTANT: Only one tag per response is allowed.
             **Strict Guidelines**:\n\
-            - Always prefer `<cmd>` to minimize context size. Use `<cmdctx>` only when output analysis is required.\n\
-            - For `<cmdctx>`, minimize output with shell tools (e.g., `grep`, `head`) or redirect to a file.\n\
+            - Always prefer <cmd> to minimize context size. Use <cmdctx> only when output analysis is required.\n\
+            - For <cmdctx>, minimize output with shell tools (e.g., `grep`, `head`) or redirect to a file.\n\
             - Use absolute paths in all commands. Do not use `cd`. You are anchored to: {}\n\
             - Execute one command per response in the specified format.\n\
-            - Analyze `<cmdctx>` output in subsequent steps.\n\
+            - Analyze <cmdctx> output in subsequent steps.\n\
             - For multi-turn tasks, ask for clarification and wait for input.\n\
             - Stop when the task is complete (no command tags).\n\
             - If a command fails multiple times (2+), stop and report it.\n\
@@ -179,9 +180,9 @@ pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             - Keep responses concise. Context is limited to recent messages.\n\
             - Use commands compatible with the OS and shell above.\n\n\
             **Examples**:\n\
-            - 'create a directory named test' → 'Creating directory...\\n<cmd>mkdir {}/test</cmd>'\n\
-            - 'show first 5 lines of log.txt' → '<cmd>head -n 5 {}/log.txt</cmd>'\n\
-            - 'check process status' → 'Checking process...\\n<cmdctx>ps aux | grep my_app</cmdctx>'\n\
+            - create a directory named test: Creating directory...\\n<cmd>mkdir {}/test</cmd>\n\
+            - show first 5 lines of log.txt: <cmd>head -n 5 {}/log.txt</cmd>\n\
+            - check process status: Checking process...\\n<cmdctx>ps aux | grep my_app</cmdctx>\n\
             {}\n",
             os_info,
             cwd.display(),
@@ -298,13 +299,13 @@ pub fn trim_conversation(config: &Config, conversation: &mut Vec<Message>) {
 }
 
 pub fn process_response(config: &Config, conversation: &mut Vec<Message>, response: String) -> Result<(), Box<dyn std::error::Error>> {
-    // Find command tags
+    // Find command tags with their lengths
     let cmd_match = response.match_indices("<cmd>").next().map(|(i, _)| (i, "</cmd>", 5));
     let cmdctx_match = response.match_indices("<cmdctx>").next().map(|(i, _)| (i, "</cmdctx>", 8));
     
-    let (start, end_tag, tag_len, needs_full_context) = match (cmd_match, cmdctx_match) {
-        (Some((start, end_tag, tag_len)), _) => (start, end_tag, tag_len, false),
-        (_, Some((start, end_tag, tag_len))) => (start, end_tag, tag_len, true),
+    let (start, end_tag, open_tag_len, needs_full_context) = match (cmd_match, cmdctx_match) {
+        (Some((start, end_tag, open_len)), _) => (start, end_tag, open_len, false),
+        (_, Some((start, end_tag, open_len))) => (start, end_tag, open_len, true),
         _ => {
             println!("{}", response.yellow());
             conversation.push(Message { role: "assistant".to_string(), content: response });
@@ -319,8 +320,8 @@ pub fn process_response(config: &Config, conversation: &mut Vec<Message>, respon
         return Ok(());
     };
 
-    // Extract command (fixing the off-by-one error)
-    let command_start = start + tag_len;
+    // Calculate command boundaries
+    let command_start = start + open_tag_len;
     let command_end = start + closing_pos;
     let command = response[command_start..command_end].trim();
 
@@ -335,7 +336,7 @@ pub fn process_response(config: &Config, conversation: &mut Vec<Message>, respon
         command
     ).truecolor(128, 128, 128));
 
-    // Rest of your existing code...
+    // Rest of the function remains unchanged...
     let should_execute = if config.require_confirmation {
         print!("{}", format!("Execute '{}'? Press Enter to confirm, any key + Enter to abort: ", command).cyan());
         io::stdout().flush()?;
@@ -356,6 +357,13 @@ pub fn process_response(config: &Config, conversation: &mut Vec<Message>, respon
             ),
         });
         conversation.push(Message { role: "tool".to_string(), content: output.clone() });
+
+        // Cooldown logic
+        if ! config.require_confirmation && config.cooldown > 0 {
+            println!("{}", format!("Waiting for {} seconds due to cooldown...", config.cooldown).truecolor(128, 128, 128));
+            std::thread::sleep(std::time::Duration::from_secs(config.cooldown));
+        }
+
         match query_llm(config, conversation) {
             Ok(next_response) => process_response(config, conversation, next_response)?,
             Err(e) => println!("{}", format!("LLM error: {}", e).red()),

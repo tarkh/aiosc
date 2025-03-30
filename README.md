@@ -37,6 +37,7 @@ Windows: C:\Users\Username\AppData\Roaming\aiosc\aiosc.config.json
 - **context_window_size**: Chat context window size (history).
 - **shell_type**: Shell type (bash, zsh, cmd, PowerShell).
 - **require_confirmation**: Requires confirmation before executing commands.
+- **cooldown**: Cooldown time in seconds between AI commands if `require_confirmation` is set to `false`.
 - **references** (optional): List of users custom commands.
 
 ## LLM Server
@@ -48,7 +49,7 @@ Tested with:
 Tested with:
 - `deepseek/deepseek-chat-v3-0324:free` (OpenRouter AI)
 - `qwen/qwen-2.5-coder-32b-instruct:free` (OpenRouter AI)
-- `meta-llama/llama-3.2-3b-instruct:free` (OpenRouter AI)
+- `meta-llama/llama-3.2-3b-instruct:free` (OpenRouter AI, frequently emits too much commands)
 - `qwen2.5-coder-7b-instruct` (LM Studio)
 
 ### Configuration Format:  
@@ -63,6 +64,7 @@ Tested with:
   "context_window_size": 32,
   "shell_type": "bash",
   "require_confirmation": true,
+  "cooldown": 0,
   "references": [
     {
       "command": "<cmdctx>my-custom-app --restart <name></cmdctx>",
@@ -81,6 +83,7 @@ AIOSC_SHOW_AI_COMMANDS_OUTPUT
 AIOSC_CONTEXT_WINDOW_SIZE
 AIOSC_SHELL_TYPE
 AIOSC_REQUIRE_CONFIRMATION
+AIOSC_COOLDOWN
 ```
 
 ## Status

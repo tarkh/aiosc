@@ -13,6 +13,7 @@ pub struct Config {
     pub context_window_size: usize,
     pub shell_type: String,
     pub require_confirmation: bool,
+    pub cooldown: u64,
     #[serde(default)] // Optional field, defaults to empty vec
     pub references: Vec<Reference>,
 }
@@ -43,6 +44,7 @@ pub fn load_config() -> Config {
         context_window_size: 32,
         shell_type: "bash".to_string(),
         require_confirmation: true,
+        cooldown: 0,
         references: Vec::new(), // Default empty references
     };
 
@@ -93,6 +95,7 @@ pub fn load_config() -> Config {
     if let Ok(size) = std::env::var("AIOSC_CONTEXT_WINDOW_SIZE") { if let Ok(n) = size.parse() { config.context_window_size = n; } }
     if let Ok(shell_type) = std::env::var("AIOSC_SHELL_TYPE") { config.shell_type = shell_type; }
     if let Ok(confirm) = std::env::var("AIOSC_REQUIRE_CONFIRMATION") { config.require_confirmation = confirm.to_lowercase() == "true"; }
+    if let Ok(cooldown) = std::env::var("AIOSC_COOLDOWN") { if let Ok(n) = cooldown.parse() { config.cooldown = n; } }
 
     config
 }
