@@ -1,7 +1,7 @@
 # AIOSC - Artificial Intelligence Operating System Commander
 
 <p align="center">
-  <img src="aiosc.webp" alt="AIOSC Logo" width="200" />
+  <img src="aiosc.webp" alt="AIOSC Logo" width="100%" />
 </p>
 
 <p align="center">
