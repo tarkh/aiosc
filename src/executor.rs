@@ -15,6 +15,7 @@ pub fn execute_command(
     command: &str,
     needs_full_context: bool,
     user_command: bool,
+    silent: bool, // Added silent param
 ) -> Result<String, Box<dyn std::error::Error>> {
     let trimmed_command = command.trim();
     if trimmed_command.starts_with("cd ") {
@@ -26,7 +27,9 @@ pub fn execute_command(
         "cmd" => ("cmd.exe", "/c"),
         "powershell" => ("powershell.exe", "-Command"),
         _ => {
-            println!("{}", format!("Unsupported SHELL_TYPE: {}. Defaulting to 'bash'.", config.shell_type).red());
+            if !silent {
+                println!("{}", format!("Unsupported SHELL_TYPE: {}. Defaulting to 'bash'.", config.shell_type).red());
+            }
             ("bash", "-c")
         }
     };
@@ -81,7 +84,11 @@ pub fn execute_command(
                     match pty.read(&mut buffer) {
                         Ok(n) if n > 0 => {
                             let chunk = String::from_utf8_lossy(&buffer[..n]);
-                            if config.show_ai_commands_output || user_command { print!("{}", chunk); io::stdout().flush()?; }
+                            // Only print if not silent and (show_ai_commands_output or user_command)
+                            if !silent && (config.show_ai_commands_output || user_command) { 
+                                print!("{}", chunk); 
+                                io::stdout().flush()?; 
+                            }
                             output.push_str(&chunk);
                         }
                         Ok(_) => running = false,

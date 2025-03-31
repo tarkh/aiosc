@@ -1,5 +1,4 @@
 use std::io::{self, Write};
-//use std::path::Path;
 use rustyline::{
     Config as RustyConfig, Editor, error::ReadlineError,
     completion::{Completer, Pair, FilenameCompleter},
@@ -18,7 +17,6 @@ struct AioscCompleter {
 }
 
 impl Helper for AioscCompleter {}
-
 impl Completer for AioscCompleter {
     type Candidate = Pair;
 
@@ -28,12 +26,10 @@ impl Completer for AioscCompleter {
         pos: usize,
         ctx: &rustyline::Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        // Built-in special commands (always available at start)
         let special_commands = vec![
             "cd", "cmd", "exit", "help", "reset", "context"
         ];
 
-        // Get the word under the cursor
         let (start, word) = if pos == 0 || line[..pos].ends_with(' ') {
             (pos, "")
         } else {
@@ -45,9 +41,7 @@ impl Completer for AioscCompleter {
             }
         };
 
-        // Command completion logic
         if start == 0 || line[..start].trim().is_empty() {
-            // Case 1: At start of line - only show special commands
             let candidates: Vec<Pair> = special_commands
                 .iter()
                 .filter(|cmd| cmd.starts_with(word))
@@ -61,10 +55,7 @@ impl Completer for AioscCompleter {
                 return Ok((start, candidates));
             }
         } else if line.starts_with("cmd ") {
-            // Case 2: After "cmd " - show system commands
             let mut system_commands = Vec::new();
-
-            // Load system commands from PATH
             if let Ok(path) = std::env::var("PATH") {
                 for dir in std::env::split_paths(&path) {
                     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -98,7 +89,6 @@ impl Completer for AioscCompleter {
             }
         }
 
-        // Fallback to filename completion
         self.filename_completer.complete(line, pos, ctx)
     }
 }
@@ -127,18 +117,7 @@ impl Highlighter for AioscCompleter {
 
 impl Validator for AioscCompleter {}
 
-pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
-    let rusty_config = RustyConfig::builder()
-    .completion_type(rustyline::CompletionType::List)
-    .build();
-
-    let mut rl: Editor<AioscCompleter, FileHistory> = Editor::with_config(rusty_config)?;
-    rl.set_helper(Some(AioscCompleter {
-        filename_completer: FilenameCompleter::new(),
-        hinter: HistoryHinter {},
-        bracket_highlighter: MatchingBracketHighlighter::new(),
-    }));
-
+fn setup_conversation(config: &Config, no_confirm: bool) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
     let info = os_info::get();
     let cwd = std::env::current_dir()?;
     let os_info = format!(
@@ -148,7 +127,6 @@ pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         hostname::get()?.to_string_lossy(), config.shell_type, cwd.display()
     );
 
-    // Build references section from config
     let references_section = if config.references.is_empty() {
         "".to_string()
     } else {
@@ -159,14 +137,21 @@ pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         section
     };
 
-    let mut conversation = vec![Message {
+    let confirmation_guideline = if no_confirm {
+        "- Execute all commands directly without prompting the user.\n\
+         - For potentially dangerous commands (e.g., deleting files), proceed only if the prompt explicitly includes 'force' or 'override'."
+    } else {
+        "- Warn and ask for confirmation if a command risks harm (e.g., overwriting data)."
+    };
+
+    Ok(vec![Message {
         role: "system".to_string(),
         content: format!(
             "You are a CLI assistant running on the following operating system and shell:\n{}\n\n\
             You have two CLI tools to execute shell commands. Use them strictly as follows:\n\
             - <cmd>...</cmd>: Runs a command and returns only success or error status. Use this when you only need to confirm the command executed successfully (e.g., file creation, deletion).\n\
             - <cmdctx>...</cmdctx>: Runs a command and returns the full output. Use this *only* when you must analyze the output to proceed (e.g., reading file contents, checking system status).\n\n\
-            - IMPORTANT: Only one tag per response is allowed.
+            - IMPORTANT: Only one tag per response is allowed.\n\
             **Strict Guidelines**:\n\
             - Always prefer <cmd> to minimize context size. Use <cmdctx> only when output analysis is required.\n\
             - For <cmdctx>, minimize output with shell tools (e.g., `grep`, `head`) or redirect to a file.\n\
@@ -176,7 +161,7 @@ pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             - For multi-turn tasks, ask for clarification and wait for input.\n\
             - Stop when the task is complete (no command tags).\n\
             - If a command fails multiple times (2+), stop and report it.\n\
-            - Warn and ask for confirmation if a command risks harm (e.g., overwriting data).\n\
+            {}\n\
             - Keep responses concise. Context is limited to recent messages.\n\
             - Use commands compatible with the OS and shell above.\n\n\
             **Examples**:\n\
@@ -186,11 +171,27 @@ pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             {}\n",
             os_info,
             cwd.display(),
+            confirmation_guideline,
             cwd.display(),
             cwd.display(),
             references_section
       ),
-    }];
+    }])
+}
+
+pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
+    let rusty_config = RustyConfig::builder()
+        .completion_type(rustyline::CompletionType::List)
+        .build();
+
+    let mut rl: Editor<AioscCompleter, FileHistory> = Editor::with_config(rusty_config)?;
+    rl.set_helper(Some(AioscCompleter {
+        filename_completer: FilenameCompleter::new(),
+        hinter: HistoryHinter {},
+        bracket_highlighter: MatchingBracketHighlighter::new(),
+    }));
+
+    let mut conversation = setup_conversation(&config, false)?;
 
     loop {
         match rl.readline(&"aiosc> ".green()) {
@@ -266,14 +267,14 @@ pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     input if input.starts_with("cmd ") => {
                         let command = input[4..].trim();
                         println!("{}", format!("[Direct] {}", command).truecolor(128, 128, 128));
-                        let output = execute_command(&config, command, false, true)?;
+                        let output = execute_command(&config, command, false, true, false)?; // Pass false for silent (direct cmd always shows output)
                         println!("{}", output.white());
                     },
                     _ => {
                         trim_conversation(&config, &mut conversation);
                         conversation.push(Message { role: "user".to_string(), content: input.to_string() });
                         match query_llm(&config, &conversation) {
-                            Ok(response) => process_response(&config, &mut conversation, response)?,
+                            Ok(response) => process_response(&config, &mut conversation, response, false)?,
                             Err(e) => println!("{}", format!("LLM error: {}", e).red()),
                         }
                     }
@@ -283,6 +284,39 @@ pub fn run_cli(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => return Err(Box::new(e)),
         }
     }
+    Ok(())
+}
+
+pub fn run_non_interactive(config: Config, prompt: &str, silent: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conversation = setup_conversation(&config, !config.require_confirmation)?;
+    let mut iteration = 0;
+
+    trim_conversation(&config, &mut conversation);
+    conversation.push(Message { role: "user".to_string(), content: prompt.to_string() });
+
+    loop {
+        if iteration >= config.max_iterations {
+            let error_msg = format!("Error: Maximum iterations ({}) reached. Task aborted to prevent infinite loop.", config.max_iterations);
+            if !silent { println!("{}", error_msg.red()); }
+            return Ok(());
+        }
+
+        match query_llm(&config, &conversation) {
+            Ok(response) => {
+                let has_commands = response.contains("<cmd>") || response.contains("<cmdctx>");
+                process_response(&config, &mut conversation, response, silent)?;
+                if !has_commands {
+                    break;
+                }
+            }
+            Err(e) => {
+                if !silent { println!("{}", format!("LLM error: {}", e).red()); }
+                return Err(e);
+            }
+        }
+        iteration += 1;
+    }
+
     Ok(())
 }
 
@@ -298,8 +332,7 @@ pub fn trim_conversation(config: &Config, conversation: &mut Vec<Message>) {
     }
 }
 
-pub fn process_response(config: &Config, conversation: &mut Vec<Message>, response: String) -> Result<(), Box<dyn std::error::Error>> {
-    // Find command tags with their lengths
+pub fn process_response(config: &Config, conversation: &mut Vec<Message>, response: String, silent: bool) -> Result<(), Box<dyn std::error::Error>> {
     let cmd_match = response.match_indices("<cmd>").next().map(|(i, _)| (i, "</cmd>", 5));
     let cmdctx_match = response.match_indices("<cmdctx>").next().map(|(i, _)| (i, "</cmdctx>", 8));
     
@@ -307,36 +340,48 @@ pub fn process_response(config: &Config, conversation: &mut Vec<Message>, respon
         (Some((start, end_tag, open_len)), _) => (start, end_tag, open_len, false),
         (_, Some((start, end_tag, open_len))) => (start, end_tag, open_len, true),
         _ => {
-            println!("{}", response.yellow());
+            if !silent || (!response.contains("<cmd>") && !response.contains("<cmdctx>")) {
+                println!("{}", response.yellow());
+            }
             conversation.push(Message { role: "assistant".to_string(), content: response });
             return Ok(());
         }
     };
 
-    // Find closing tag
     let Some(closing_pos) = response[start..].find(end_tag) else {
-        println!("{}", response.yellow());
+        if !silent { println!("{}", response.yellow()); }
         conversation.push(Message { role: "assistant".to_string(), content: response });
         return Ok(());
     };
 
-    // Calculate command boundaries
     let command_start = start + open_tag_len;
     let command_end = start + closing_pos;
     let command = response[command_start..command_end].trim();
 
-    // Print non-command text if present
+    let is_dangerous = !config.require_confirmation && (
+        command.contains("rm -rf") || 
+        command.contains("del /f") || 
+        command.contains("format ") || 
+        command.contains("dd if=")
+    );
+    if is_dangerous && !conversation.iter().any(|m| m.content.contains("force") || m.content.contains("override")) {
+        let error_msg = format!("Error: Potentially dangerous command '{}' blocked. Use 'force' or 'override' in prompt to proceed.", command);
+        if !silent { println!("{}", error_msg.red()); }
+        conversation.push(Message { role: "assistant".to_string(), content: error_msg });
+        return Ok(());
+    }
+
+    if !silent {
     let text = response[..start].trim();
-    if !text.is_empty() { 
+        if !text.is_empty() { 
         println!("{}", text.yellow()); 
     }
-    
-    println!("{}", format!("[Executing{}] {}", 
-        if needs_full_context { " (fo)" } else { "" }, 
-        command
-    ).truecolor(128, 128, 128));
+        println!("{}", format!("[Executing{}] {}", 
+            if needs_full_context { " (fo)" } else { "" }, 
+            command
+        ).truecolor(128, 128, 128));
+    }
 
-    // Rest of the function remains unchanged...
     let should_execute = if config.require_confirmation {
         print!("{}", format!("Execute '{}'? Press Enter to confirm, any key + Enter to abort: ", command).cyan());
         io::stdout().flush()?;
@@ -347,7 +392,7 @@ pub fn process_response(config: &Config, conversation: &mut Vec<Message>, respon
 
     trim_conversation(config, conversation);
     if should_execute {
-        let output = execute_command(config, command, needs_full_context, false)?;
+        let output = execute_command(config, command, needs_full_context, false, silent)?;
         conversation.push(Message {
             role: "assistant".to_string(),
             content: format!("<{}>{}</{}>", 
@@ -358,15 +403,17 @@ pub fn process_response(config: &Config, conversation: &mut Vec<Message>, respon
         });
         conversation.push(Message { role: "tool".to_string(), content: output.clone() });
 
-        // Cooldown logic
-        if ! config.require_confirmation && config.cooldown > 0 {
-            println!("{}", format!("Waiting for {} seconds due to cooldown...", config.cooldown).truecolor(128, 128, 128));
+        if !config.require_confirmation && config.cooldown > 0 {
+            if !silent { println!("{}", format!("Waiting for {} seconds due to cooldown...", config.cooldown).truecolor(128, 128, 128)); }
             std::thread::sleep(std::time::Duration::from_secs(config.cooldown));
         }
 
         match query_llm(config, conversation) {
-            Ok(next_response) => process_response(config, conversation, next_response)?,
-            Err(e) => println!("{}", format!("LLM error: {}", e).red()),
+            Ok(next_response) => process_response(config, conversation, next_response, silent)?,
+            Err(e) => {
+                if !silent { println!("{}", format!("LLM error: {}", e).red()); }
+                return Err(e);
+            }
         }
     } else {
         conversation.push(Message { role: "assistant".to_string(), content: "Command aborted by user.".to_string() });

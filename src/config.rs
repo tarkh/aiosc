@@ -14,8 +14,10 @@ pub struct Config {
     pub shell_type: String,
     pub require_confirmation: bool,
     pub cooldown: u64,
-    #[serde(default)] // Optional field, defaults to empty vec
+    #[serde(default)]
     pub references: Vec<Reference>,
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: usize,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -23,6 +25,8 @@ pub struct Reference {
     pub command: String,
     pub description: String,
 }
+
+fn default_max_iterations() -> usize { 10 }
 
 pub fn get_config_path() -> PathBuf {
     if let Ok(path) = std::env::var("AIOSC_CONFIG_PATH") {
@@ -45,29 +49,21 @@ pub fn load_config() -> Config {
         shell_type: "bash".to_string(),
         require_confirmation: true,
         cooldown: 0,
-        references: Vec::new(), // Default empty references
+        references: Vec::new(),
+        max_iterations: default_max_iterations(),
     };
 
     let config_path = get_config_path();
     if !config_path.exists() {
         if let Some(parent) = config_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                println!(
-                    "{}",
-                    format!("Failed to create config directory '{}': {}", parent.display(), e).red()
-                );
+                println!("{}", format!("Failed to create config directory '{}': {}", parent.display(), e).red());
             } else {
                 let default_json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
                 if let Err(e) = std::fs::write(&config_path, default_json) {
-                    println!(
-                        "{}",
-                        format!("Failed to write default config to '{}': {}", config_path.display(), e).red()
-                    );
+                    println!("{}", format!("Failed to write default config to '{}': {}", config_path.display(), e).red());
                 } else {
-                    println!(
-                        "{}",
-                        format!("Created default config at '{}'", config_path.display()).green()
-                    );
+                    println!("{}", format!("Created default config at '{}'", config_path.display()).green());
                 }
             }
         }
@@ -96,6 +92,7 @@ pub fn load_config() -> Config {
     if let Ok(shell_type) = std::env::var("AIOSC_SHELL_TYPE") { config.shell_type = shell_type; }
     if let Ok(confirm) = std::env::var("AIOSC_REQUIRE_CONFIRMATION") { config.require_confirmation = confirm.to_lowercase() == "true"; }
     if let Ok(cooldown) = std::env::var("AIOSC_COOLDOWN") { if let Ok(n) = cooldown.parse() { config.cooldown = n; } }
+    if let Ok(max_iter) = std::env::var("AIOSC_MAX_ITERATIONS") { if let Ok(n) = max_iter.parse() { config.max_iterations = n; } }
 
     config
 }
