@@ -1,4 +1,4 @@
-# AIOSC - Artificial Intelligence Operating System Commander
+# <p align="center">AIOSC<br>Artificial Intelligence Operating System Commander</p>
 
 <p align="center">
   <img src="aiosc.webp" alt="AIOSC Logo" width="100%" />
